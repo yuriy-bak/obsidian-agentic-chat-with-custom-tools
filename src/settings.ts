@@ -18,6 +18,7 @@ import { MUTATING_TOOLS } from "./tools/tool-contracts";
 import { createVaultTools } from "./tools/vault-tools";
 import {
   exportMcpServerConfig,
+  isInProcessMcpServer,
   mcpServerSetupSteps,
   nextUniqueMcpServerId,
   normalizeMcpServerId,
@@ -37,6 +38,7 @@ import {
 } from "./mcp/oauth";
 import { createFetchFromWebFetcher, createMcpFetcher, createProxiedFetcher } from "./mcp/fetcher";
 import { localMcpToolNames, probeMcpServer } from "./mcp/tools";
+import { createObsidianPluginResolver } from "./mcp/in-process";
 import {
   formatMcpServerSummary,
   formatMcpToolApprovalDescription,
@@ -1220,7 +1222,8 @@ export class AgenticChatSettingTab extends PluginSettingTab {
     server: McpServerSettings,
   ): void {
     const pluginManaged = server.source === "plugin";
-    const endpointProblem = mcpEndpointProblem(server.url);
+    const inProcess = isInProcessMcpServer(server);
+    const endpointProblem = inProcess ? "" : mcpEndpointProblem(server.url);
     let testButton: ButtonComponent | undefined;
     const syncTestButton = (): void => {
       if (!testButton) return;
@@ -1317,9 +1320,14 @@ export class AgenticChatSettingTab extends PluginSettingTab {
     if (pluginManaged) {
       containerEl.createDiv({
         cls: "setting-item-description",
-        text: `This server lives in the "${pluginManaged ? server.pluginRoot : ""}" agent plugin package. ` +
-          "Its endpoint and literal headers come from mcp.json; authentication is configured client-side " +
-          "and stays with this plugin. Remove the package folder to delete the server.",
+        text: inProcess
+          ? `This server lives in the "${server.pluginRoot ?? ""}" agent plugin package. ` +
+            'It is declared in plugin.json (extensions["agentic-chat"]) and runs in-process: tool calls are ' +
+            `handled on this device by the Obsidian plugin "${server.inProcess?.pluginId ?? ""}", which must be ` +
+            "installed and enabled. Remove the package folder to delete the server."
+          : `This server lives in the "${pluginManaged ? server.pluginRoot : ""}" agent plugin package. ` +
+            "Its endpoint and literal headers come from mcp.json; authentication is configured client-side " +
+            "and stays with this plugin. Remove the package folder to delete the server.",
       });
     }
 
@@ -1350,21 +1358,30 @@ export class AgenticChatSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName("HTTPS endpoint")
-      .setDesc(endpointProblem || "Streamable HTTP endpoint. Query parameters are preserved. Loopback hosts may use http://.")
-      .addText((text) =>
-        text
-          .setDisabled(pluginManaged)
-          .setPlaceholder("https://mcp.example.com/mcp")
-          .setValue(server.url)
-          .onChange(async (value) => {
-            const result = this.updateMcpServerEndpoint(settings, server, value);
-            await this.save();
-            if (result.clearedCredentials) new Notice(`${server.name}: cleared MCP credentials for the changed endpoint.`);
-            if (result.shouldDisplay) this.redraw();
-          }),
-      );
+    if (inProcess) {
+      new Setting(containerEl)
+        .setName("Transport")
+        .setDesc(
+          `In-process (Obsidian plugin). Plugin id: ${server.inProcess?.pluginId ?? ""}, ` +
+            `export: ${server.inProcess?.exportName ?? ""}. Nothing is sent over the network.`,
+        );
+    } else {
+      new Setting(containerEl)
+        .setName("HTTPS endpoint")
+        .setDesc(endpointProblem || "Streamable HTTP endpoint. Query parameters are preserved. Loopback hosts may use http://.")
+        .addText((text) =>
+          text
+            .setDisabled(pluginManaged)
+            .setPlaceholder("https://mcp.example.com/mcp")
+            .setValue(server.url)
+            .onChange(async (value) => {
+              const result = this.updateMcpServerEndpoint(settings, server, value);
+              await this.save();
+              if (result.clearedCredentials) new Notice(`${server.name}: cleared MCP credentials for the changed endpoint.`);
+              if (result.shouldDisplay) this.redraw();
+            }),
+        );
+    }
 
     new Setting(containerEl)
       .setName("Approval")
@@ -1382,8 +1399,10 @@ export class AgenticChatSettingTab extends PluginSettingTab {
           }),
       );
 
-    this.renderMcpSetupGuide(containerEl, server);
-    this.renderMcpAuthentication(containerEl, server, syncTestButton);
+    if (!inProcess) {
+      this.renderMcpSetupGuide(containerEl, server);
+      this.renderMcpAuthentication(containerEl, server, syncTestButton);
+    }
     this.renderMcpToolFilters(containerEl, server);
     this.renderMcpToolApprovals(containerEl, settings, server);
   }
@@ -1672,10 +1691,11 @@ export class AgenticChatSettingTab extends PluginSettingTab {
   }
 
   private async probeAndCacheMcpTools(server: McpServerSettings): Promise<Awaited<ReturnType<typeof probeMcpServer>>> {
-    const endpointProblem = mcpEndpointProblem(server.url);
+    const endpointProblem = isInProcessMcpServer(server) ? "" : mcpEndpointProblem(server.url);
     if (endpointProblem) throw new Error(endpointProblem);
     const result = await probeMcpServer(server, createMcpFetcher(this.effectiveMcpProxySettings()), {
       onServerChanged: () => this.save(),
+      inProcessResolver: createObsidianPluginResolver(this.app),
     });
     server.knownTools = result.tools;
     server.enabled = true;

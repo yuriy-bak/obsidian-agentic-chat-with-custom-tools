@@ -71,4 +71,23 @@ describe("MCP settings state helpers", () => {
       "mcp__docs__search",
     );
   });
+
+  it("summarizes in-process servers without endpoint or auth and never blocks Test connection", () => {
+    const server = {
+      ...createMcpServerSettings({ id: "tasks", name: "Tasks", url: "obsidian-plugin://tasks-query-mcp/agenticMcp" }),
+      source: "plugin" as const,
+      transport: "obsidian-plugin" as const,
+      inProcess: { pluginId: "tasks-query-mcp", exportName: "agenticMcp" },
+    };
+
+    expect(formatMcpServerSummary(server, "")).toBe(
+      'in-process · Obsidian plugin "tasks-query-mcp" · enabled · no tools discovered yet',
+    );
+    expect(mcpTestButtonState(server)).toEqual({
+      label: "Test connection",
+      busyLabel: "Testing...",
+      problem: "",
+      needsOAuthSignIn: false,
+    });
+  });
 });
