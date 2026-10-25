@@ -1,0 +1,55 @@
+name: Release (fork)
+
+# Fork releases (main keeps upstream semantic-release in release.yml). Creates a GitHub release (tag = manifest.json version) with the BRAT assets
+# whenever a pushed commit carries a version that has no release yet.
+# Versions with a "-" suffix are published as pre-releases.
+on:
+  push:
+    branches: ["**", "!main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-ext
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p 'require("./manifest.json").version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.exists == 'false'
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.version.outputs.exists == 'false'
+        run: npm ci
+      - if: steps.version.outputs.exists == 'false'
+        run: npm test
+      - if: steps.version.outputs.exists == 'false'
+        run: npm run build
+      - name: Create release
+        if: steps.version.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          flags=""
+          case "$VERSION" in *-*) flags="--prerelease" ;; esac
+          gh release create "$VERSION" main.js manifest.json styles.css --target "$GITHUB_SHA" --title "$VERSION" $flags \
+            --notes "Agentic Chat fork $VERSION with in-process MCP servers. Install with BRAT: yuriy-bak/obsidian-agentic-chat-with-custom-tools."
