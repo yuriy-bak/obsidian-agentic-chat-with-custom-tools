@@ -48,6 +48,12 @@ export interface McpCallToolResult {
   isError?: boolean;
 }
 
+/** Transport-independent MCP client surface used by discovery and tool calls. */
+export interface McpClient {
+  listTools(signal?: AbortSignal): Promise<McpToolDefinition[]>;
+  callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<McpCallToolResult>;
+}
+
 interface McpInitializeResult {
   protocolVersion?: string;
   serverInfo?: {
@@ -129,7 +135,7 @@ class McpSseResponseIncompleteError extends Error {
   }
 }
 
-export class McpHttpClient {
+export class McpHttpClient implements McpClient {
   private readonly server: McpServerSettings;
   private readonly fetcher: WebFetcher;
   private readonly onServerChanged?: () => void | Promise<void>;
@@ -649,7 +655,7 @@ export function normalizeMcpUrl(input: string): string {
   return parsed.toString();
 }
 
-function parseTools(value: unknown): McpToolDefinition[] {
+export function parseTools(value: unknown): McpToolDefinition[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     const record = asRecord(item);

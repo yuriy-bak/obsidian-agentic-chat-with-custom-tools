@@ -53,6 +53,15 @@ export interface McpServerSettings {
   /** Vault path of the plugin package that declared this server, when plugin-sourced. */
   pluginRoot?: string;
   /**
+   * Transport. Absent means Streamable HTTP. "obsidian-plugin" servers are
+   * declared in plugin.json extensions["agentic-chat"].inProcessMcpServers and
+   * talk JSON-RPC to an object exported by another Obsidian plugin; their `url`
+   * is a synthetic obsidian-plugin:// label that is never fetched.
+   */
+  transport?: "streamable-http" | "obsidian-plugin";
+  /** Target of an "obsidian-plugin" server. */
+  inProcess?: { pluginId: string; exportName: string };
+  /**
    * Ordered allow-then-deny globs for remote tools (S5).
    * `enabledTools` is an allowlist: when non-empty only matching tools are exposed.
    * `disabledTools` is a denylist: any match is hidden even if allowed. Deny wins.
@@ -193,6 +202,11 @@ export const DEFAULT_MCP_OAUTH_SETTINGS: McpOAuthSettings = {
   expiresAt: 0,
   scope: "",
 };
+
+/** True for servers handled in-process by another Obsidian plugin. */
+export function isInProcessMcpServer(server: Pick<McpServerSettings, "transport" | "inProcess">): boolean {
+  return server.transport === "obsidian-plugin" && Boolean(server.inProcess);
+}
 
 export function healMcpSettings(stored: Partial<McpSettings> | null | undefined): McpSettings {
   const servers = Array.isArray(stored?.servers) ? stored.servers.map(healMcpServer).filter(isMcpServer) : [];
