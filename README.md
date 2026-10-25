@@ -1,6 +1,6 @@
 # Agentic Chat for Obsidian
 
-> **Fork notice.** This is `yuriy-bak/obsidian-agentic-chat-with-custom-tools`, a fork of [tardigrde/obsidian-agentic-chat](https://github.com/tardigrde/obsidian-agentic-chat) (MIT) that adds **in-process MCP servers** provided by other Obsidian plugins (see [MCP tools](#mcp-tools)). The plugin id stays `agentic-chat`, so it installs over the original via BRAT (`yuriy-bak/obsidian-agentic-chat-with-custom-tools`); versions are `<upstream>-ext.<n>`.
+> **Fork notice.** This is `yuriy-bak/obsidian-agentic-chat-with-custom-tools`, a fork of [tardigrde/obsidian-agentic-chat](https://github.com/tardigrde/obsidian-agentic-chat) (MIT) that adds **in-process MCP servers** provided by other Obsidian plugins (see [MCP tools](#mcp-tools)). The plugin id stays `agentic-chat`, so it installs over the original via BRAT (`yuriy-bak/obsidian-agentic-chat-with-custom-tools`); versions are `<upstream>-ext.<n>`. Releases come from `.github/workflows/release-ext.yml` (a pre-release for every new `-ext` version); the upstream semantic-release workflow is disabled in the fork. When upstream publishes a newer version, Obsidian offers an update from the community catalog — don't install it (it would replace the fork); update through BRAT after the fork is synced.
 
 > **Experimental — under heavy development.** APIs, settings, and behavior change frequently. Pin a version if you need stability.
 
