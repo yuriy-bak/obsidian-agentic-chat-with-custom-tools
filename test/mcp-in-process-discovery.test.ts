@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { App } from "obsidian";
 import { loadPlugins, pluginMcpServerId, resolveMcpServers } from "../src/plugins/loader";
 import { AGENT_PLUGINS_MCP_SCHEMA_ID, AGENT_PLUGINS_SCHEMA_ID, validateAgenticChatExtension } from "../src/plugins/manifest";
-import { createMcpToolsWithDiagnostics, mcpServerIdFromToolName, probeMcpServer } from "../src/mcp/tools";
+import { createMcpTools, createMcpToolsWithDiagnostics, isInProcessMcpTool, mcpServerIdFromToolName, probeMcpServer } from "../src/mcp/tools";
 import { McpInProcessUnavailableError, type InProcessMcpServer, type JsonRpcMessage } from "../src/mcp/in-process";
-import { createMcpServerState, type McpServerSettings } from "../src/mcp/settings";
+import { createMcpServerSettings, createMcpServerState, type McpServerSettings } from "../src/mcp/settings";
 import type { WebFetcher } from "../src/tools/web-fetch";
 import { FakeApp } from "./helpers/fake-vault";
 
@@ -256,5 +256,21 @@ describe("in-process MCP discovery", () => {
       toolNames: ["query_tasks"],
       tools: [{ name: "query_tasks", localName: `mcp__${server.id}__query_tasks`, title: "query_tasks", readOnlyHint: true }],
     });
+  });
+
+  it("marks in-process tools (pinned against the tool budget) but not HTTP ones", async () => {
+    const server = await tasksServer();
+    const [inProcess] = await createMcpTools(settings(server), noNetwork, { inProcessResolver: () => fakeServer([{ name: "query_tasks" }]) });
+    expect(inProcess && isInProcessMcpTool(inProcess)).toBe(true);
+
+    const http = createMcpServerSettings({ id: "docs", name: "Docs", url: "https://mcp.example.com/mcp", enabled: true });
+    const replies = [
+      { status: 200, headers: {}, text: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-11-25" } }) },
+      { status: 202, headers: {}, text: "" },
+      { status: 200, headers: {}, text: JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search" }] } }) },
+    ];
+    const [remote] = await createMcpTools(settings(http), async () => replies.shift()!);
+    expect(remote?.name).toBe("mcp__docs__search");
+    expect(remote && isInProcessMcpTool(remote)).toBe(false);
   });
 });
