@@ -9,15 +9,12 @@ import {
 } from "../mcp/settings";
 import { parseSkillMarkdown } from "../skills/skill-format";
 import { sha256Hex } from "../utils/sha256";
-import { inProcessMcpUrl } from "../mcp/in-process";
 import {
   AGENT_PLUGINS_MCP_SCHEMA_ID,
-  type PluginInProcessMcpServer,
   type PluginMcpServer,
   type PluginMcpValidation,
   type PluginManifest,
   type PluginReportItem,
-  validateAgenticChatExtension,
   validateMcpConfig,
   validatePluginManifest,
 } from "./manifest";
@@ -45,10 +42,7 @@ export interface LoadedPlugin {
   skillReports: PluginReportItem[];
   /** mcp.json validation (null when the plugin has no mcp.json). */
   mcpValidation: PluginMcpValidation | null;
-  /**
-   * Derived servers that made it through validation: streamable-http entries
-   * from mcp.json plus in-process entries from plugin.json extensions.
-   */
+  /** Derived streamable-http servers that made it through validation. */
   mcpServers: McpServerSettings[];
   /** All reports for this plugin (manifest warnings, skipped components). */
   reports: PluginReportItem[];
@@ -142,8 +136,7 @@ async function loadPluginDir(
   const parsed = validation.manifest as PluginManifest;
 
   const { skills, skillReports } = await loadPluginSkills(app, rootPath, reports);
-  const { mcpValidation, mcpServers: httpServers } = await loadPluginMcp(app, rootPath, parsed.name, reports);
-  const mcpServers = [...httpServers, ...loadPluginInProcessMcp(parsed, rootPath, mcpValidation, reports)];
+  const { mcpValidation, mcpServers } = await loadPluginMcp(app, rootPath, parsed.name, reports);
 
   const enabled = enabledPlugins[parsed.name] !== false;
   // "partial" whenever a component was skipped or rejected: skill reports,
@@ -271,54 +264,6 @@ async function loadPluginMcp(
     .filter((entry) => isDerivableServer(entry))
     .map((entry) => mcpServerFromPluginEntry(pluginName, rootPath, entry));
   return { mcpValidation: validation, mcpServers };
-}
-
-/**
- * In-process MCP servers from plugin.json extensions["agentic-chat"]. A key
- * already used in mcp.json would map to the same server id, so it is skipped.
- */
-function loadPluginInProcessMcp(
-  manifest: PluginManifest,
-  rootPath: string,
-  mcpValidation: PluginMcpValidation | null,
-  reports: PluginReportItem[],
-): McpServerSettings[] {
-  const { servers, reports: extensionReports } = validateAgenticChatExtension(manifest.extensions);
-  reports.push(...extensionReports);
-  const mcpJsonKeys = new Set((mcpValidation?.servers ?? []).map((entry) => entry.key));
-  return servers.flatMap((entry) => {
-    if (mcpJsonKeys.has(entry.key)) {
-      reports.push({
-        severity: "error",
-        message: `in-process MCP server "${entry.key}" uses a key already declared in mcp.json; skipped.`,
-      });
-      return [];
-    }
-    return [mcpServerFromInProcessEntry(manifest.name, rootPath, entry)];
-  });
-}
-
-export function mcpServerFromInProcessEntry(
-  pluginName: string,
-  pluginRoot: string,
-  entry: PluginInProcessMcpServer,
-): McpServerSettings {
-  const target = { pluginId: entry.pluginId, exportName: entry.exportName };
-  return {
-    ...createMcpServerSettings({
-      id: pluginMcpServerId(pluginName, entry.key),
-      name: `${pluginName}: ${entry.key}`,
-      url: inProcessMcpUrl(target),
-      // Same D11 default as mcp.json servers: appearing on disk never enables a server.
-      enabled: false,
-      approval: "ask",
-      authType: "none",
-    }),
-    source: "plugin",
-    pluginRoot,
-    transport: "obsidian-plugin",
-    inProcess: target,
-  };
 }
 
 /** A server entry becomes a derived server only when valid AND transport is supported. */

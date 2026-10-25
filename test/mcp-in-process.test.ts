@@ -1,260 +1,134 @@
 import { describe, expect, it } from "vitest";
 import type { App } from "obsidian";
-import {
-  createObsidianPluginResolver,
-  inProcessMcpUrl,
-  inProcessTargetProblem,
-  McpInProcessClient,
-  McpInProcessUnavailableError,
-  type InProcessMcpServer,
-  type JsonRpcMessage,
-} from "../src/mcp/in-process";
-import { createMcpServerSettings, type McpServerSettings } from "../src/mcp/settings";
+import { withInProcessMcp } from "../src/mcp/in-process";
+import { createMcpToolsWithDiagnostics } from "../src/mcp/tools";
+import { createMcpServerSettings } from "../src/mcp/settings";
+import { mcpUrlProblem } from "../src/utils/host-policy";
+import type { WebFetcher, WebHttpRequest } from "../src/tools/web-fetch";
 
-const TARGET = { pluginId: "tasks-query-mcp", exportName: "agenticMcp" };
+const URL = "obsidian-plugin://tasks-query-mcp/agenticMcp";
 
-function server(overrides: Partial<McpServerSettings> = {}): McpServerSettings {
-  return {
-    ...createMcpServerSettings({ id: "tasks", name: "Tasks MCP", url: inProcessMcpUrl(TARGET), enabled: true }),
-    source: "plugin",
-    transport: "obsidian-plugin",
-    inProcess: TARGET,
-    ...overrides,
-  };
+interface JsonRpc {
+  jsonrpc: "2.0";
+  id?: number | string | null;
+  method?: string;
+  params?: { name?: string; arguments?: Record<string, unknown> };
 }
 
-const TOOL = {
-  name: "query_tasks",
-  description: "Run a Tasks query",
-  inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-  annotations: { readOnlyHint: true },
-};
-
-/** Minimal spec-shaped server; records every message it sees. */
-function fakeServer(
-  overrides: Partial<Record<string, (message: JsonRpcMessage) => unknown>> = {},
-): InProcessMcpServer & { seen: JsonRpcMessage[] } {
-  const seen: JsonRpcMessage[] = [];
-  const handlers: Record<string, (message: JsonRpcMessage) => unknown> = {
-    initialize: () => ({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fake" } }),
-    "tools/list": () => ({ tools: [TOOL] }),
-    "tools/call": (message) => ({
-      content: [{ type: "text", text: `ran ${JSON.stringify((message.params as { arguments: unknown }).arguments)}` }],
-    }),
-    ...overrides,
-  };
+/** Spec-shaped in-process server: initialize, tools/list, tools/call, -32601 otherwise. */
+function fakeServer(seen: JsonRpc[] = []) {
   return {
     contractVersion: 1,
-    seen,
-    async handle(message) {
+    async handle(message: JsonRpc) {
       seen.push(message);
       if (message.id === undefined) return null;
-      const handler = handlers[message.method ?? ""];
-      if (!handler) return { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } };
-      return { jsonrpc: "2.0", id: message.id, result: handler(message) };
+      if (message.method === "initialize") return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25" } };
+      if (message.method === "tools/list") {
+        return { jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "query_tasks", annotations: { readOnlyHint: true } }] } };
+      }
+      if (message.method === "tools/call") {
+        return { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: `ran ${message.params?.arguments?.query}` }] } };
+      }
+      return { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } };
     },
   };
 }
 
-function clientFor(target: InProcessMcpServer, requestTimeoutMs?: number): McpInProcessClient {
-  return new McpInProcessClient({ server: server(), resolve: () => target, requestTimeoutMs });
+function app(exported: unknown, enabled = true): App {
+  return {
+    plugins: {
+      enabledPlugins: new Set(enabled ? ["tasks-query-mcp"] : []),
+      plugins: { "tasks-query-mcp": { agenticMcp: exported } },
+    },
+  } as unknown as App;
 }
 
-describe("McpInProcessClient", () => {
-  it("initializes, sends notifications/initialized, then lists tools", async () => {
-    const fake = fakeServer();
-    const tools = await clientFor(fake).listTools();
+const network: WebFetcher = async () => ({ status: 200, headers: {}, text: "network" });
+const post = (body: unknown, url = URL): WebHttpRequest => ({ url, method: "POST", headers: {}, body: JSON.stringify(body) });
 
-    expect(tools).toEqual([
-      expect.objectContaining({ name: "query_tasks", description: "Run a Tasks query", annotations: { readOnlyHint: true } }),
-    ]);
-    expect(fake.seen.map((message) => message.method)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
-    expect(fake.seen[0]).toMatchObject({ jsonrpc: "2.0", id: 1, params: { protocolVersion: "2025-11-25" } });
-    expect(fake.seen[1].id).toBeUndefined();
+describe("withInProcessMcp", () => {
+  it("passes other URLs to the wrapped fetcher", async () => {
+    const fetcher = withInProcessMcp(network, app(fakeServer()));
+    await expect(fetcher({ url: "https://mcp.example.com/mcp", method: "POST", headers: {} })).resolves.toMatchObject({ text: "network" });
   });
 
-  it("follows tools/list pagination", async () => {
-    const fake = fakeServer({
-      "tools/list": (message) =>
-        (message.params as { cursor?: string } | undefined)?.cursor === "p2"
-          ? { tools: [{ ...TOOL, name: "second" }] }
-          : { tools: [TOOL], nextCursor: "p2" },
-    });
-    const tools = await clientFor(fake).listTools();
-
-    expect(tools.map((tool) => tool.name)).toEqual(["query_tasks", "second"]);
+  it("answers requests with JSON and notifications with 202", async () => {
+    const fetcher = withInProcessMcp(network, app(fakeServer()));
+    const reply = await fetcher(post({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.text)).toMatchObject({ id: 1, result: { tools: [{ name: "query_tasks" }] } });
+    await expect(fetcher(post({ jsonrpc: "2.0", method: "notifications/initialized" }))).resolves.toEqual({ status: 202, headers: {}, text: "" });
   });
 
-  it("calls a tool with its arguments", async () => {
-    const fake = fakeServer();
-    const result = await clientFor(fake).callTool("query_tasks", { query: "not done" });
-
-    expect(result.content).toEqual([{ type: "text", text: 'ran {"query":"not done"}' }]);
-    expect(fake.seen.at(-1)).toMatchObject({ method: "tools/call", params: { name: "query_tasks", arguments: { query: "not done" } } });
+  it("hands the server a copy of the message", async () => {
+    let received: unknown;
+    const fetcher = withInProcessMcp(network, app({ contractVersion: 1, handle: async (message: unknown) => ((received = message), null) }));
+    await fetcher(post({ jsonrpc: "2.0", method: "x", params: { a: { b: 1 } } }));
+    expect(received).toEqual({ jsonrpc: "2.0", method: "x", params: { a: { b: 1 } } });
   });
 
-  it("passes copies of messages so the server cannot keep references to client objects", async () => {
-    const args = { query: "done", nested: { a: 1 } };
-    let received: JsonRpcMessage | undefined;
-    const fake = fakeServer({
-      "tools/call": (message) => {
-        received = message;
-        return { content: [] };
-      },
-    });
-    await clientFor(fake).callTool("query_tasks", args);
-
-    const receivedArgs = (received?.params as { arguments: Record<string, unknown> }).arguments;
-    expect(receivedArgs).toEqual(args);
-    expect(receivedArgs).not.toBe(args);
-    expect(receivedArgs.nested).not.toBe(args.nested);
+  it("turns an exception in handle() into a JSON-RPC error for that request", async () => {
+    const fetcher = withInProcessMcp(network, app({ contractVersion: 1, handle: async () => { throw new Error("boom"); } }));
+    const reply = await fetcher(post({ jsonrpc: "2.0", id: 7, method: "tools/call" }));
+    expect(JSON.parse(reply.text)).toEqual({ jsonrpc: "2.0", id: 7, error: { code: -32603, message: "in-process server threw: boom" } });
   });
 
-  it("surfaces JSON-RPC errors as errors", async () => {
-    const fake = fakeServer();
-    fake.handle = async (message) =>
-      message.method === "tools/call"
-        ? { jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Unknown tool: nope" } }
-        : fakeServer().handle(message);
-
-    await expect(clientFor(fake).callTool("nope", {})).rejects.toThrow(/Tasks MCP tools\/call failed: Unknown tool: nope/);
-  });
-
-  it("turns an exception inside handle() into an error", async () => {
-    const fake = fakeServer({
-      "tools/call": () => {
-        throw new Error("boom");
-      },
-    });
-
-    await expect(clientFor(fake).callTool("query_tasks", {})).rejects.toThrow(/in-process server threw: boom/);
-  });
-
-  it("turns a synchronous throw from handle() into an error", async () => {
-    const target = {
-      contractVersion: 1,
-      handle: () => {
-        throw new Error("sync boom");
-      },
-    } as unknown as InProcessMcpServer;
-
-    await expect(clientFor(target).listTools()).rejects.toThrow(/initialize failed: in-process server threw: sync boom/);
-  });
-
-  it("times out a handle() call that never settles", async () => {
-    const target: InProcessMcpServer = { contractVersion: 1, handle: () => new Promise(() => undefined) };
-
-    await expect(clientFor(target, 5).listTools()).rejects.toThrow(/timed out after 5 ms while Tasks MCP initialize/);
-  });
-
-  it("aborts a pending call when the signal fires", async () => {
-    const fake = fakeServer();
-    const controller = new AbortController();
-    fake.handle = async (message) => {
-      if (message.method === "tools/call") {
-        controller.abort();
-        return new Promise(() => undefined);
-      }
-      return fakeServer().handle(message);
-    };
-
-    await expect(clientFor(fake).callTool("query_tasks", {}, controller.signal)).rejects.toThrow("Aborted.");
-  });
-
-  it("rejects a missing response, a mismatched id, and a response without result", async () => {
-    const noReply: InProcessMcpServer = { contractVersion: 1, handle: async () => null };
-    await expect(clientFor(noReply).listTools()).rejects.toThrow(/returned no response/);
-
-    const wrongId: InProcessMcpServer = {
-      contractVersion: 1,
-      handle: async () => ({ jsonrpc: "2.0", id: 999, result: {} }),
-    };
-    await expect(clientFor(wrongId).listTools()).rejects.toThrow(/response for another request/);
-
-    const noResult: InProcessMcpServer = { contractVersion: 1, handle: async (message) => ({ jsonrpc: "2.0", id: message.id }) };
-    await expect(clientFor(noResult).listTools()).rejects.toThrow(/invalid JSON-RPC response/);
-  });
-
-  it("propagates resolver failures (missing plugin, bad contract)", async () => {
-    const client = new McpInProcessClient({
-      server: server(),
-      resolve: () => {
-        throw new McpInProcessUnavailableError('Obsidian plugin "tasks-query-mcp" is not installed or not enabled.');
-      },
-    });
-
-    await expect(client.listTools()).rejects.toBeInstanceOf(McpInProcessUnavailableError);
-  });
-
-  it("refuses to wrap a server without an in-process target", () => {
-    expect(
-      () => new McpInProcessClient({ server: server({ inProcess: undefined }), resolve: () => fakeServer() }),
-    ).toThrow(/not an in-process server/);
-  });
-});
-
-describe("createObsidianPluginResolver", () => {
-  function appWith(registry: { enabledPlugins?: Set<string>; plugins?: Record<string, unknown> } | undefined): App {
-    return { plugins: registry } as unknown as App;
-  }
-
-  it("returns the export of an enabled, loaded plugin", () => {
-    const fake = fakeServer();
-    const resolve = createObsidianPluginResolver(
-      appWith({ enabledPlugins: new Set(["tasks-query-mcp"]), plugins: { "tasks-query-mcp": { agenticMcp: fake } } }),
-    );
-
-    expect(resolve(TARGET)).toBe(fake);
+  it("refuses non-POST requests", async () => {
+    const fetcher = withInProcessMcp(network, app(fakeServer()));
+    await expect(fetcher({ url: URL, method: "GET", headers: {} })).resolves.toMatchObject({ status: 405 });
   });
 
   it.each([
-    ["missing registry", undefined, /not installed or not enabled/],
-    ["plugin not enabled", { enabledPlugins: new Set<string>(), plugins: {} }, /not installed or not enabled/],
-    ["enabled but not loaded", { enabledPlugins: new Set(["tasks-query-mcp"]), plugins: {} }, /not loaded yet/],
-    [
-      "no export",
-      { enabledPlugins: new Set(["tasks-query-mcp"]), plugins: { "tasks-query-mcp": {} } },
-      /has no "agenticMcp" export/,
-    ],
-    [
-      "wrong contract version",
-      {
-        enabledPlugins: new Set(["tasks-query-mcp"]),
-        plugins: { "tasks-query-mcp": { agenticMcp: { contractVersion: 2, handle: async () => null } } },
-      },
-      /contract version 2; expected 1/,
-    ],
-    [
-      "no handle()",
-      { enabledPlugins: new Set(["tasks-query-mcp"]), plugins: { "tasks-query-mcp": { agenticMcp: { contractVersion: 1 } } } },
-      /has no handle\(\) function/,
-    ],
-  ])("reports %s", (_label, registry, message) => {
-    const resolve = createObsidianPluginResolver(appWith(registry));
-
-    expect(() => resolve(TARGET)).toThrow(McpInProcessUnavailableError);
-    expect(() => resolve(TARGET)).toThrow(message);
+    ["a disabled plugin", app(fakeServer(), false), URL, /not installed or not enabled/],
+    ["a missing export", app(undefined), URL, /has no "agenticMcp" in-process MCP server/],
+    ["another contract version", app({ contractVersion: 2, handle: async () => null }), URL, /contract v1/],
+    ["a server without handle()", app({ contractVersion: 1 }), URL, /contract v1/],
+    ["a prototype export", app(fakeServer()), "obsidian-plugin://tasks-query-mcp/__proto__", /Invalid in-process MCP URL/],
+    ["a malformed URL", app(fakeServer()), "obsidian-plugin://tasks-query-mcp/a/b", /Invalid in-process MCP URL/],
+  ])("rejects %s", async (_label, appValue, url, message) => {
+    await expect(withInProcessMcp(network, appValue)(post({ jsonrpc: "2.0", id: 1, method: "initialize" }, url))).rejects.toThrow(message);
   });
 
-  it("rejects unsafe target names before touching the registry", () => {
-    const resolve = createObsidianPluginResolver(appWith({ enabledPlugins: new Set(["x"]), plugins: { x: {} } }));
+  it("serves discovery and tool calls through the regular MCP client", async () => {
+    const seen: JsonRpc[] = [];
+    const server = createMcpServerSettings({ id: "tasks", name: "Tasks", url: URL, enabled: true });
+    const result = await createMcpToolsWithDiagnostics(
+      { enabled: true, proxyUrl: "", noProxy: "", servers: [server] },
+      withInProcessMcp(async () => {
+        throw new Error("must not reach the network");
+      }, app(fakeServer(seen))),
+    );
 
-    expect(() => resolve({ pluginId: "x", exportName: "__proto__" })).toThrow(/invalid export/);
-    expect(() => resolve({ pluginId: "x", exportName: "a.b" })).toThrow(/invalid export/);
-    expect(() => resolve({ pluginId: "../x", exportName: "agenticMcp" })).toThrow(/invalid pluginId/);
-    expect(() => resolve({ pluginId: "agentic-chat", exportName: "agenticMcp" })).toThrow(/Agentic Chat itself/);
+    expect(result.diagnostics[0]).toMatchObject({ status: "ok", toolNames: ["query_tasks"] });
+    expect(result.tools.map((tool) => tool.name)).toEqual(["mcp__tasks__query_tasks"]);
+    const output = await result.tools[0]!.execute("call-1", { query: "not done" }, undefined);
+    expect((output.content[0] as { text: string }).text).toContain("ran not done");
+    expect(seen.map((message) => message.method)).toEqual([
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "initialize",
+      "notifications/initialized",
+      "tools/call",
+    ]);
+  });
+
+  it("reports an unavailable plugin as a discovery error without tools", async () => {
+    const server = createMcpServerSettings({ id: "tasks", name: "Tasks", url: URL, enabled: true });
+    const result = await createMcpToolsWithDiagnostics(
+      { enabled: true, proxyUrl: "", noProxy: "", servers: [server] },
+      withInProcessMcp(network, app(fakeServer(), false)),
+    );
+    expect(result.tools).toEqual([]);
+    expect(result.diagnostics[0]).toMatchObject({ status: "error", error: expect.stringMatching(/not installed or not enabled/) });
   });
 });
 
-describe("inProcessTargetProblem", () => {
-  it("accepts typical Obsidian plugin ids and identifier exports", () => {
-    expect(inProcessTargetProblem(TARGET)).toBe("");
-    expect(inProcessTargetProblem({ pluginId: "obsidian-tasks-plugin", exportName: "$mcp_1" })).toBe("");
-  });
-
-  it("rejects missing or malformed names", () => {
-    expect(inProcessTargetProblem({})).toMatch(/invalid pluginId/);
-    expect(inProcessTargetProblem({ pluginId: "ok", exportName: "constructor" })).toMatch(/invalid export/);
-    expect(inProcessTargetProblem({ pluginId: "has space", exportName: "x" })).toMatch(/invalid pluginId/);
+describe("mcpUrlProblem for in-process URLs", () => {
+  it("accepts obsidian-plugin://<plugin-id>/<export> and rejects other shapes", () => {
+    expect(mcpUrlProblem(URL)).toBeNull();
+    expect(mcpUrlProblem("obsidian-plugin://tasks-query-mcp/agenticMcp/extra")).toMatch(/obsidian-plugin:/);
+    expect(mcpUrlProblem("obsidian-plugin://tasks-query-mcp")).toMatch(/obsidian-plugin:/);
+    expect(mcpUrlProblem("ftp://example.com/mcp")).toMatch(/http/);
   });
 });

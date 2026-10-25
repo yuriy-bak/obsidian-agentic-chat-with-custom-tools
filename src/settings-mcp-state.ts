@@ -1,6 +1,5 @@
 import { hasMcpOAuthAccess } from "./mcp/oauth";
 import {
-  isInProcessMcpServer,
   mcpServerAuthProblem,
   mcpServerEndpointProblem,
   type McpKnownToolSettings,
@@ -27,9 +26,6 @@ export function formatMcpServerSummary(server: McpServerSettings, endpointProble
     server.knownTools.length > 0
       ? `${server.knownTools.length} discovered ${toolLabel}`
       : "no tools discovered yet";
-  if (isInProcessMcpServer(server)) {
-    return `in-process · Obsidian plugin "${server.inProcess?.pluginId ?? ""}" · ${status} · ${tools}`;
-  }
   const endpoint = endpointProblem || server.url || "No endpoint configured";
   return `${endpoint} · ${status} · ${auth} · ${tools}`;
 }
@@ -52,10 +48,6 @@ export function mcpAuthProblem(server: McpServerSettings): string {
 }
 
 export function mcpTestButtonState(server: McpServerSettings): McpTestButtonState {
-  if (isInProcessMcpServer(server)) {
-    // No endpoint or credentials: Test connection asks the target plugin directly.
-    return { label: "Test connection", busyLabel: "Testing...", problem: "", needsOAuthSignIn: false };
-  }
   const hasPendingOAuth = Boolean(server.pendingOAuthChallenge && server.pendingOAuthResourceUrl);
   const needsOAuthSignIn = (server.authType === "oauth" && !hasMcpOAuthAccess(server)) || hasPendingOAuth;
   const problem = mcpEndpointProblem(server.url) || (needsOAuthSignIn ? "" : mcpAuthProblem(server));
