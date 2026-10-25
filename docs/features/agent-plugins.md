@@ -75,8 +75,6 @@ namespace of `plugin.json` (not in `mcp.json`, which stays plain Agent Plugins 1
   switch must be on too), approval **ask** by default, the same allow/deny tool filters, the same
   untrusted-output wrapping, limits, and artifacts, and the same approval gate (plan mode denies,
   YOLO allows unless the server is set to deny). Tool annotations such as `readOnlyHint` are not trusted.
-- The tool budget (Settings → Tool budget) never drops in-process MCP tools: they make no network calls and
-  the user enabled them for this vault. Remote MCP tools are still dropped first when tool schemas grow large.
 - Each `handle()` call has the MCP request timeout (30 s); an exception or JSON-RPC error becomes a
   tool error, never a crash. Messages are copied through JSON in both directions.
 - If the target plugin is missing, disabled, has no such export, or implements another contract

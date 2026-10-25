@@ -21,7 +21,7 @@ import { wrapToolOutput } from "../tools/tool-output-wrapper";
 import { truncateToolOutput } from "../vault/truncate";
 import { createMcpFetcher } from "../mcp/fetcher";
 import { createObsidianPluginResolver } from "../mcp/in-process";
-import { createMcpToolsWithDiagnostics, isInProcessMcpTool, type McpServerDiagnostic } from "../mcp/tools";
+import { createMcpToolsWithDiagnostics, type McpServerDiagnostic } from "../mcp/tools";
 import { createToolArtifactTools } from "../artifacts/tool-artifact-tools";
 import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
 import { type IgnoreMatcher } from "../vault/ignore";
@@ -229,8 +229,6 @@ export function buildAgentParentTools(options: {
         toolSchemaTokens: null,
       },
     contextWindow: options.contextWindow,
-    // In-process MCP tools stay: no egress, and the user enabled them explicitly for this vault.
-    isPinned: isInProcessMcpTool,
   });
   return { tools: budgeted.tools, toolBudget: budgeted.snapshot };
 }

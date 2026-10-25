@@ -33,8 +33,6 @@ export interface ApplyToolBudgetOptions {
   settings: ToolBudgetSettings;
   state: ToolBudgetState;
   contextWindow?: number;
-  /** Tools that are never dropped, e.g. in-process MCP tools the user enabled (no network, part of the vault setup). */
-  isPinned?: (tool: AgentTool) => boolean;
 }
 
 export const DEFAULT_TOOL_BUDGET_SETTINGS: ToolBudgetSettings = {
@@ -83,7 +81,6 @@ export function applyToolBudget(options: ApplyToolBudgetOptions): { tools: Agent
   options.state.triggeredAtToolSchemaFraction = shouldDrop ? toolSchemaFraction : null;
   if (shouldDrop) {
     for (const tool of options.tools) {
-      if (options.isPinned?.(tool)) continue;
       if (toolBudgetDropReason(tool.name)) options.state.droppedToolNames.add(tool.name);
     }
   }

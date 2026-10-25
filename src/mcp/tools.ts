@@ -18,13 +18,6 @@ import { filterMcpToolsByGlobs } from "./tool-filter";
 
 export const MCP_TOOL_PREFIX = "mcp__";
 
-const inProcessMcpTools = new WeakSet<AgentTool>();
-
-/** True for tools served by an in-process (obsidian-plugin) MCP server. */
-export function isInProcessMcpTool(tool: AgentTool): boolean {
-  return inProcessMcpTools.has(tool);
-}
-
 export interface McpToolDetails {
   serverId: string;
   serverName: string;
@@ -274,7 +267,7 @@ function createMcpTool(
   const transportNote = isInProcessMcpServer(server)
     ? `In-process MCP tool "${remoteTool.name}" on ${server.name}. Handled on this device by the Obsidian plugin "${server.inProcess?.pluginId ?? ""}".`
     : `Remote MCP tool "${remoteTool.name}" on ${server.name}. Sends the tool arguments to ${server.url}.`;
-  const tool: AgentTool<TSchema, McpToolDetails> = {
+  return {
     name: localName,
     label: `${server.name}: ${remoteTool.title || remoteTool.name}`,
     description: `${toolDescription}\n\n${transportNote}`,
@@ -310,8 +303,6 @@ function createMcpTool(
       };
     },
   };
-  if (isInProcessMcpServer(server)) inProcessMcpTools.add(tool as AgentTool);
-  return tool;
 }
 
 export function mcpKnownTools(tools: readonly McpToolDefinition[], serverId?: string): McpKnownToolSettings[] {

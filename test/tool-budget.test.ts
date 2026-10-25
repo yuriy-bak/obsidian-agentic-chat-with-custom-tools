@@ -164,19 +164,4 @@ describe("tool budget", () => {
     expect(toolBudgetDropReason("web_search")).toBe("web egress");
     expect(toolBudgetDropReason("mcp__docs__lookup")).toBe("remote MCP");
   });
-
-  it("never drops pinned tools (in-process MCP) while still dropping other optional ones", () => {
-    const state = createToolBudgetState();
-    const list = tools(["read", "mcp__plugin_tasks__query_tasks", "mcp__docs__search", "subagent"]);
-    const result = applyToolBudget({
-      tools: list,
-      settings,
-      state,
-      contextWindow: 10,
-      isPinned: (tool) => tool.name === "mcp__plugin_tasks__query_tasks",
-    });
-
-    expect(result.tools.map((tool) => tool.name)).toEqual(["read", "mcp__plugin_tasks__query_tasks"]);
-    expect(result.snapshot.droppedTools.map((tool) => tool.name)).toEqual(["mcp__docs__search", "subagent"]);
-  });
 });
