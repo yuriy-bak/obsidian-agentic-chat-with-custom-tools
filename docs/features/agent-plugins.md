@@ -17,7 +17,7 @@ Plugins live in `.agentic-plugins/` at the vault root (configurable in Settings 
 ```
 
 - **Skills** — each folder under `skills/` holds a `SKILL.md`. The frontmatter `name` and `description` feed the skill registry; the body is the skill content. Plugin skills load first, so a plugin skill of the same name shadows a built-in.
-- **MCP** — `mcp.json` declares `mcpServers` (currently `streamable-http` only). Servers whose transport is unsupported are skipped; valid ones load with their persisted client state (enable toggle, approval, auth, OAuth) preserved by id. Tool names use the id `mcp__plugin_<name>_<key>__<tool>`.
+- **MCP** — `mcp.json` declares `mcpServers` (currently `streamable-http` only; in-process servers backed by another Obsidian plugin are declared in `plugin.json`, see [below](#in-process-mcp-servers-obsidian-plugins)). Servers whose transport is unsupported are skipped; valid ones load with their persisted client state (enable toggle, approval, auth, OAuth) preserved by id. Tool names use the id `mcp__plugin_<name>_<key>__<tool>`.
 
 A plugin with only an `mcp.json` (no skills) is valid — MCP-only plugins are allowed by the spec.
 
@@ -31,6 +31,58 @@ deleting it restores on next restart (or via **Repair built-ins**, which also re
 > only created when missing and never auto-updated, so after a plugin update it can lag behind the
 > bundled skill text until you hit **Repair built-ins**. The agent always falls back to the bundled
 > text for skills shadowed by nothing, but vault edits win — when in doubt, repair.
+
+## In-process MCP servers (Obsidian plugins)
+
+An agent plugin can also point at an MCP server implemented by **another Obsidian plugin** in the
+same vault. Nothing goes over the network: JSON-RPC messages are handed to an object that plugin
+exports, so it works the same on desktop and mobile. The declaration lives in the client extension
+namespace of `plugin.json` (not in `mcp.json`, which stays plain Agent Plugins 1.0):
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tasks-query",
+  "version": "0.1.0",
+  "description": "Run Obsidian Tasks queries",
+  "extensions": {
+    "agentic-chat": {
+      "inProcessMcpServers": {
+        "tasks": { "type": "obsidian-plugin", "pluginId": "tasks-query-mcp", "export": "agenticMcp" }
+      }
+    }
+  }
+}
+```
+
+- `pluginId` is the Obsidian plugin id; `export` is the property of that plugin instance holding the
+  server (`app.plugins.plugins[pluginId][export]`). Only an **enabled** plugin's own export is used —
+  no `eval`, no code loading, no arbitrary property paths.
+- The exported object implements contract version 1:
+
+  ```ts
+  interface InProcessMcpServer {
+    contractVersion: 1;
+    /** Handles one JSON-RPC 2.0 message; returns null for notifications. */
+    handle(message: JsonRpcMessage): Promise<JsonRpcMessage | null>;
+  }
+  ```
+
+  Required methods: `initialize`, `notifications/initialized`, `tools/list`, `tools/call`; anything
+  else should answer with JSON-RPC error `-32601`.
+- Servers behave like `mcp.json` servers: stable id (`plugin_<name>_<hash>`), tool names
+  `mcp__<server-id>__<tool>`, **disabled until you enable them** in the MCP tab (the MCP master
+  switch must be on too), approval **ask** by default, the same allow/deny tool filters, the same
+  untrusted-output wrapping, limits, and artifacts, and the same approval gate (plan mode denies,
+  YOLO allows unless the server is set to deny). Tool annotations such as `readOnlyHint` are not trusted.
+- Each `handle()` call has the MCP request timeout (30 s); an exception or JSON-RPC error becomes a
+  tool error, never a crash. Messages are copied through JSON in both directions.
+- If the target plugin is missing, disabled, has no such export, or implements another contract
+  version, `/status`, `/doctor`, and **Test connection** report it (category `plugin`) and no tools
+  are registered; the rest of the agent keeps working. Runtime resources reload at the start of
+  every turn, so a plugin that loads after Agentic Chat is picked up on the next message.
+- Invalid entries (unknown `type`, malformed `pluginId`/`export`, a key already used in `mcp.json`)
+  are skipped and listed in `/doctor`; they never reject the whole package.
 
 ## Creating plugins
 
