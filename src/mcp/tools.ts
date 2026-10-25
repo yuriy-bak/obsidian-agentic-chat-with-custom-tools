@@ -5,8 +5,15 @@ import type { ToolArtifactMetadata, ToolArtifactStoreLike } from "../artifacts/t
 import type { WebFetcher } from "../tools/web-fetch";
 import { truncateToolOutput } from "../vault/truncate";
 import { wrapToolOutput, wrapToolOutputTruncated } from "../tools/tool-output-wrapper";
-import { McpHttpClient, type McpCallToolResult, type McpToolDefinition } from "./client";
-import type { McpAuthType, McpKnownToolSettings, McpServerSettings, McpSettings } from "./settings";
+import { McpHttpClient, type McpCallToolResult, type McpClient, type McpToolDefinition } from "./client";
+import { McpInProcessClient, McpInProcessUnavailableError, type InProcessMcpResolver } from "./in-process";
+import {
+  isInProcessMcpServer,
+  type McpAuthType,
+  type McpKnownToolSettings,
+  type McpServerSettings,
+  type McpSettings,
+} from "./settings";
 import { filterMcpToolsByGlobs } from "./tool-filter";
 
 export const MCP_TOOL_PREFIX = "mcp__";
@@ -27,11 +34,13 @@ export interface McpToolDetails {
 
 export interface McpToolCreationOptions {
   onServerChanged?: () => void | Promise<void>;
+  /** Looks up in-process (obsidian-plugin) servers; without it they report as unavailable. */
+  inProcessResolver?: InProcessMcpResolver;
   artifactStore?: ToolArtifactStoreLike;
   artifactThresholdChars?: number;
 }
 
-export type McpDiagnosticErrorCategory = "auth" | "http" | "network" | "protocol" | "timeout" | "unknown";
+export type McpDiagnosticErrorCategory = "auth" | "http" | "network" | "plugin" | "protocol" | "timeout" | "unknown";
 
 export interface McpServerDiagnostic {
   serverId: string;
@@ -106,10 +115,27 @@ export async function probeMcpServer(
   fetcher: WebFetcher,
   options: McpToolCreationOptions = {},
 ): Promise<McpServerProbeResult> {
-  const client = new McpHttpClient({ server, fetcher, onServerChanged: options.onServerChanged });
+  const client = createMcpClient(server, fetcher, options);
   const tools = await client.listTools();
   const filtered = filterMcpToolsByGlobs(tools, server.enabledTools ?? [], server.disabledTools ?? []);
   return { toolCount: filtered.length, toolNames: filtered.map((tool) => tool.name), tools: mcpKnownTools(filtered, server.id) };
+}
+
+/** Picks the transport for a server: in-process for obsidian-plugin servers, HTTP otherwise. */
+export function createMcpClient(
+  server: McpServerSettings,
+  fetcher: WebFetcher,
+  options: McpToolCreationOptions = {},
+): McpClient {
+  if (isInProcessMcpServer(server)) {
+    const resolve: InProcessMcpResolver =
+      options.inProcessResolver ??
+      (() => {
+        throw new McpInProcessUnavailableError("In-process MCP servers are not available in this context.");
+      });
+    return new McpInProcessClient({ server, resolve });
+  }
+  return new McpHttpClient({ server, fetcher, onServerChanged: options.onServerChanged });
 }
 
 export function isMcpToolName(toolName: string): boolean {
@@ -139,7 +165,7 @@ async function discoverServerTools(
   options: McpToolCreationOptions,
 ): Promise<{ tools: AgentTool[]; diagnostic: McpServerDiagnostic }> {
   try {
-    const client = new McpHttpClient({ server, fetcher, onServerChanged: options.onServerChanged });
+    const client = createMcpClient(server, fetcher, options);
     const remoteTools = await client.listTools();
     const filtered = filterMcpToolsByGlobs(remoteTools, server.enabledTools ?? [], server.disabledTools ?? []);
     const usedNames = new Set<string>();
@@ -167,7 +193,8 @@ async function discoverServerTools(
         status: "error",
         toolCount: 0,
         toolNames: [],
-        errorCategory: categorizeMcpDiagnosticError(message),
+        errorCategory:
+          error instanceof McpInProcessUnavailableError ? "plugin" : categorizeMcpDiagnosticError(message),
         error: message,
       },
     };
@@ -237,15 +264,16 @@ function createMcpTool(
 ): AgentTool<TSchema, McpToolDetails> {
   const parameters = mcpInputSchema(remoteTool.inputSchema);
   const toolDescription = remoteTool.description || `Call ${remoteTool.name} on the ${server.name} MCP server.`;
+  const transportNote = isInProcessMcpServer(server)
+    ? `In-process MCP tool "${remoteTool.name}" on ${server.name}. Handled on this device by the Obsidian plugin "${server.inProcess?.pluginId ?? ""}".`
+    : `Remote MCP tool "${remoteTool.name}" on ${server.name}. Sends the tool arguments to ${server.url}.`;
   return {
     name: localName,
     label: `${server.name}: ${remoteTool.title || remoteTool.name}`,
-    description:
-      `${toolDescription}\n\n` +
-      `Remote MCP tool "${remoteTool.name}" on ${server.name}. Sends the tool arguments to ${server.url}.`,
+    description: `${toolDescription}\n\n${transportNote}`,
     parameters,
     execute: async (_id, params, signal) => {
-      const client = new McpHttpClient({ server, fetcher, onServerChanged: options.onServerChanged });
+      const client = createMcpClient(server, fetcher, options);
       const result = await client.callTool(remoteTool.name, params as Record<string, unknown>, signal);
       const rendered = await renderMcpResult(result, {
         artifactStore: options.artifactStore,

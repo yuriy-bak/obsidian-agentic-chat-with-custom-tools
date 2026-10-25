@@ -17,6 +17,7 @@
  */
 import { assertValidHttpHeaderName, assertValidHttpHeaderValue } from "../mcp/http-headers";
 import { mcpUrlProblem } from "../utils/host-policy";
+import { inProcessTargetProblem } from "../mcp/in-process";
 
 /** Canonical plugin manifest schema identifier for Agent Plugins 1.0.0. */
 export const AGENT_PLUGINS_SCHEMA_ID = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
@@ -517,6 +518,81 @@ function isStringRecord(value: unknown): boolean {
 
 function isStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** plugin.json `extensions` namespace read by this client. */
+export const AGENTIC_CHAT_EXTENSION_KEY = "agentic-chat";
+
+/** In-process MCP server declared in extensions["agentic-chat"].inProcessMcpServers. */
+export interface PluginInProcessMcpServer {
+  /** Server key as written in inProcessMcpServers. */
+  key: string;
+  /** Obsidian plugin id that exports the server. */
+  pluginId: string;
+  /** Property of that plugin instance holding the server object. */
+  exportName: string;
+}
+
+const IN_PROCESS_ENTRY_FIELDS = new Set(["type", "pluginId", "export"]);
+
+/**
+ * Read in-process MCP servers from plugin.json extensions. Lives in the client
+ * extension namespace (not mcp.json) so the package stays valid Agent Plugins
+ * 1.0. Invalid entries are skipped and reported; they never reject the plugin.
+ */
+export function validateAgenticChatExtension(extensions: Record<string, unknown> | undefined): {
+  servers: PluginInProcessMcpServer[];
+  reports: PluginReportItem[];
+} {
+  const reports: PluginReportItem[] = [];
+  const extension = extensions?.[AGENTIC_CHAT_EXTENSION_KEY];
+  if (extension === undefined) return { servers: [], reports };
+  const where = `plugin.json extensions["${AGENTIC_CHAT_EXTENSION_KEY}"]`;
+  if (!isRecord(extension)) {
+    reports.push({ severity: "error", message: `${where} is not an object; it was ignored.` });
+    return { servers: [], reports };
+  }
+  const entries = (extension as Record<string, unknown>).inProcessMcpServers;
+  if (entries === undefined) return { servers: [], reports };
+  if (!isRecord(entries)) {
+    reports.push({ severity: "error", message: `${where}.inProcessMcpServers is not an object; it was ignored.` });
+    return { servers: [], reports };
+  }
+  const servers: PluginInProcessMcpServer[] = [];
+  for (const [key, value] of Object.entries(entries as Record<string, unknown>)) {
+    const label = `in-process MCP server "${key}"`;
+    if (!key.trim()) {
+      reports.push({ severity: "error", message: `${where}: an in-process MCP server has an empty key; skipped.` });
+      continue;
+    }
+    if (!isRecord(value)) {
+      reports.push({ severity: "error", message: `${label} is not an object; skipped.` });
+      continue;
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type !== "obsidian-plugin") {
+      reports.push({ severity: "error", message: `${label} has unsupported type "${String(record.type)}"; skipped.` });
+      continue;
+    }
+    const target = {
+      pluginId: typeof record.pluginId === "string" ? record.pluginId : "",
+      exportName: typeof record.export === "string" ? record.export : "",
+    };
+    const problem = inProcessTargetProblem(target);
+    if (problem) {
+      reports.push({ severity: "error", message: `${label} has ${problem}; skipped.` });
+      continue;
+    }
+    const unknownFields = Object.keys(record).filter((field) => !IN_PROCESS_ENTRY_FIELDS.has(field));
+    if (unknownFields.length > 0) {
+      reports.push({
+        severity: "warning",
+        message: `${label} has unknown field${unknownFields.length === 1 ? "" : "s"} ${unknownFields.join(", ")}; ignored.`,
+      });
+    }
+    servers.push({ key, ...target });
+  }
+  return { servers, reports };
 }
 
 function isAuthorObject(value: unknown): boolean {
