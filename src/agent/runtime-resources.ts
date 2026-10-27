@@ -20,6 +20,7 @@ import { formatSkillInvocation } from "../skills/skills";
 import { wrapToolOutput } from "../tools/tool-output-wrapper";
 import { truncateToolOutput } from "../vault/truncate";
 import { createMcpFetcher } from "../mcp/fetcher";
+import { withInProcessMcp } from "../mcp/in-process";
 import { createMcpToolsWithDiagnostics, type McpServerDiagnostic } from "../mcp/tools";
 import { createToolArtifactTools } from "../artifacts/tool-artifact-tools";
 import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
@@ -95,7 +96,7 @@ export async function loadAgentRuntimeResources(
   const mcp = webFetch
     ? await createMcpToolsWithDiagnostics(
         { ...settings.mcp, servers: mcpServers },
-        createMcpFetcher(mcpProxySettings, webFetch),
+        withInProcessMcp(createMcpFetcher(mcpProxySettings, webFetch), app),
         {
           onServerChanged: onSettingsChanged,
           artifactStore,

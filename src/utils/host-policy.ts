@@ -58,6 +58,8 @@ export function mcpUrlProblem(url: string): string | null {
   } catch {
     return '"url" must be a valid absolute URL.';
   }
+  // MCP server exported by another Obsidian plugin (see withInProcessMcp); never fetched.
+  if (parsed.protocol === "obsidian-plugin:") return /^obsidian-plugin:\/\/[a-z0-9][a-z0-9._-]*\/[A-Za-z_$][\w$]*$/.test(url) ? null : '"url" must be obsidian-plugin://<plugin-id>/<export>.';
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return '"url" must use http:// or https://.';
   }

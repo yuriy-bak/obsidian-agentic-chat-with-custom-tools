@@ -36,6 +36,7 @@ import {
   type McpOAuthProgressEvent,
 } from "./mcp/oauth";
 import { createFetchFromWebFetcher, createMcpFetcher, createProxiedFetcher } from "./mcp/fetcher";
+import { withInProcessMcp } from "./mcp/in-process";
 import { localMcpToolNames, probeMcpServer } from "./mcp/tools";
 import {
   formatMcpServerSummary,
@@ -1674,7 +1675,7 @@ export class AgenticChatSettingTab extends PluginSettingTab {
   private async probeAndCacheMcpTools(server: McpServerSettings): Promise<Awaited<ReturnType<typeof probeMcpServer>>> {
     const endpointProblem = mcpEndpointProblem(server.url);
     if (endpointProblem) throw new Error(endpointProblem);
-    const result = await probeMcpServer(server, createMcpFetcher(this.effectiveMcpProxySettings()), {
+    const result = await probeMcpServer(server, withInProcessMcp(createMcpFetcher(this.effectiveMcpProxySettings()), this.app), {
       onServerChanged: () => this.save(),
     });
     server.knownTools = result.tools;
